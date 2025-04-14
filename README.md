@@ -1,4 +1,4 @@
-# ToolRL
+# ToolRL: Reward is All Tool Learning Needs
 [**🤗 Model**](https://huggingface.co/) | [**📊 Dataset**](https://github.com/qiancheng0/ToolRL/tree/main/dataset) | [**📖 Paper**](https://arxiv.org/)
 
 ![DataPipeline](assets/reward.png)
