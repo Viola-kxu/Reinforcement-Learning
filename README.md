@@ -61,7 +61,7 @@ To train the model with a specific reward variant, please enable one of the envi
 ```text
 @article{qian2025smart,
   title={ToolRL: Reward is All Tool Learning Needs},
-  author={Cheng Qian and Emre Can Ackigoz and Qi He and Hongru Wang and Xiusi Chen and Dilek Hakkani-Tür and Gokhan Tur and Heng Ji},
+  author={Cheng Qian and Emre Can Acikgoz and Qi He and Hongru Wang and Xiusi Chen and Dilek Hakkani-Tür and Gokhan Tur and Heng Ji},
   journal={arXiv preprint arXiv:......},
   year={2025}
 }
