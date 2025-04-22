@@ -59,10 +59,13 @@ To train the model with a specific reward variant, please enable one of the envi
 
 ## 🖊️ Citation
 ```text
-@article{qian2025smart,
-  title={ToolRL: Reward is All Tool Learning Needs},
-  author={Cheng Qian and Emre Can Acikgoz and Qi He and Hongru Wang and Xiusi Chen and Dilek Hakkani-Tür and Gokhan Tur and Heng Ji},
-  journal={arXiv preprint arXiv:......},
-  year={2025}
+@misc{qian2025toolrlrewardtoollearning,
+      title={ToolRL: Reward is All Tool Learning Needs}, 
+      author={Cheng Qian and Emre Can Acikgoz and Qi He and Hongru Wang and Xiusi Chen and Dilek Hakkani-Tür and Gokhan Tur and Heng Ji},
+      year={2025},
+      eprint={2504.13958},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2504.13958}, 
 }
 ```
