@@ -1,5 +1,5 @@
 # ToolRL: Reward is All Tool Learning Needs
-[**🤗 Model**](https://huggingface.co/) | [**📊 Dataset**](https://github.com/qiancheng0/ToolRL/tree/main/dataset) | [**📖 Paper**](https://arxiv.org/)
+[**🤗 Model**](https://huggingface.co/collections/emrecanacikgoz/toolrl-680706679204ead5a6d44f58) | [**📊 Dataset**](https://github.com/qiancheng0/ToolRL/tree/main/dataset) | [**📖 Paper**](https://arxiv.org/pdf/2504.13958)
 
 ![DataPipeline](assets/reward.png)
 
@@ -59,13 +59,10 @@ To train the model with a specific reward variant, please enable one of the envi
 
 ## 🖊️ Citation
 ```text
-@misc{qian2025toolrlrewardtoollearning,
-      title={ToolRL: Reward is All Tool Learning Needs}, 
-      author={Cheng Qian and Emre Can Acikgoz and Qi He and Hongru Wang and Xiusi Chen and Dilek Hakkani-Tür and Gokhan Tur and Heng Ji},
-      year={2025},
-      eprint={2504.13958},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2504.13958}, 
+@article{qian2025toolrl,
+  title={ToolRL: Reward is All Tool Learning Needs},
+  author={Qian, Cheng and Acikgoz, Emre Can and He, Qi and Wang, Hongru and Chen, Xiusi and Hakkani-T{\"u}r, Dilek and Tur, Gokhan and Ji, Heng},
+  journal={arXiv preprint arXiv:2504.13958},
+  year={2025}
 }
 ```
