@@ -56,6 +56,28 @@ export COARSEREWARD=1 # Change to coarse reward (Section 5.3)
 
 To train the model with a specific reward variant, please enable one of the environment variables described above.
 
+### Running without VLLM (Hugging Face fallback)
+If you cannot install [vLLM](https://github.com/vllm-project/vllm)—for example on Windows—you can still run PPO/GRPO by switching the rollout backend to Hugging Face `transformers`. Use the PowerShell helper:
+
+```
+pwsh examples/ppo_trainer/run_ppo_hf.ps1 -DataDir dataset/rlla_4k `
+     -BaseModel "Qwen/Qwen2.5-7B-Instruct" `
+     -ExperimentName router-hf `
+     -GPUs 1
+```
+
+This script wraps the usual Hydra call but adds `actor_rollout_ref.rollout.name=hf` and safe defaults (tensor-model-parallel = 1, modest micro-batches, etc.). You can also pass the override manually if you prefer another launcher:
+
+```
+python -m verl.trainer.main_ppo ... actor_rollout_ref.rollout.name=hf \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.micro_batch_size=8 ...
+```
+
+Steps:
+1. Install `transformers` alongside PyTorch/Ray: `pip install transformers`.
+2. Set `actor_rollout_ref.rollout.name=hf` (and optionally adjust `temperature`, `top_p`, `micro_batch_size`).
+3. Run training as usual; everything else in ToolRL (reward computation, router RL loop, etc.) works unchanged—throughput is simply slower than vLLM.
 
 ## 🖊️ Citation
 ```text

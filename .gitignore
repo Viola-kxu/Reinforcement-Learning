@@ -108,3 +108,6 @@ ENV/
 # vim
 *.swp
 
+#dataset
+dataset/rlla_4k_raw/
+dataset/rlla_4k/
