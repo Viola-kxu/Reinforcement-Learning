@@ -154,6 +154,21 @@ trainer:
   n_gpus_per_node: 8
   save_freq: -1
   test_freq: -1
+  val_before_train: true
   critic_warmup: 0
   default_hdfs_dir: null
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
+  save_on_exit: true
+  use_reference_policy: true
+
+router:
+  enable: false
+  budget_B: 0.3
+  lagrange_lr: 0.01
+  init_lambda: 0.0
+  cost_weights:
+    any_tool: 1.0
+    search: 0.0
+    calculate: 0.0
+  tokenizer_decode_kwargs:
+    skip_special_tokens: false

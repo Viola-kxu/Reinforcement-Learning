@@ -22,17 +22,20 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pprint import pprint
-from typing import Type, Dict
+from typing import Type, Dict, List
 
 import numpy as np
 from codetiming import Timer
 from omegaconf import OmegaConf, open_dict
+from tqdm import tqdm
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 from verl.single_controller.base import Worker
 from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo import core_algos
+from verl.trainer.router.budget import RouterBudgetController
+from verl.trainer.router.reward import analyze_tool_usage, compute_tool_cost
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 
 WorkerType = Type[Worker]
@@ -145,6 +148,11 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
     else:
         raise NotImplementedError
     return data
+
+
+def _decode_responses(tokenizer, responses, decode_kwargs):
+    response_ids = responses.detach().cpu().tolist()
+    return tokenizer.batch_decode(response_ids, **decode_kwargs)
 
 
 def reduce_metrics(metrics: dict):
@@ -347,6 +355,24 @@ class RayPPOTrainer(object):
         self.use_reference_policy = Role.RefPolicy in role_worker_mapping
         self.use_rm = Role.RewardModel in role_worker_mapping
         self.ray_worker_group_cls = ray_worker_group_cls
+
+        router_conf = getattr(config, 'router', None)
+        self.router_enabled = bool(router_conf and router_conf.get('enable', False))
+        if self.router_enabled:
+            router_conf_dict = OmegaConf.to_container(router_conf, resolve=True)
+            cost_weights = router_conf_dict.get('cost_weights', {}) or {}
+            decode_kwargs = router_conf_dict.get('tokenizer_decode_kwargs', {}) or {}
+            self.router_cost_weights = {k: float(v) for k, v in cost_weights.items()}
+            self.router_decode_kwargs = decode_kwargs
+            self.router_budget_ctrl = RouterBudgetController(
+                budget=float(router_conf_dict.get('budget_B', 0.3)),
+                lr=float(router_conf_dict.get('lagrange_lr', 0.01)),
+                init_lambda=float(router_conf_dict.get('init_lambda', 0.0)),
+            )
+        else:
+            self.router_cost_weights = {}
+            self.router_decode_kwargs = {}
+            self.router_budget_ctrl = None
 
         # define KL control
         if self.use_reference_policy:
@@ -597,6 +623,52 @@ class RayPPOTrainer(object):
                                                     prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
+    def _maybe_compute_router_rewards(self, batch: DataProto):
+        if not self.router_enabled:
+            return {}
+        token_level_scores = batch.batch['token_level_scores']
+        responses = batch.batch['responses']
+        device = token_level_scores.device
+        dtype = token_level_scores.dtype
+
+        sequence_scores = token_level_scores.sum(dim=-1).float()
+        decoded_responses = _decode_responses(self.tokenizer, responses, self.router_decode_kwargs)
+
+        costs: List[float] = []
+        used_any = []
+        used_search = []
+        used_calc = []
+
+        for text in decoded_responses:
+            usage = analyze_tool_usage(text)
+            costs.append(compute_tool_cost(usage, self.router_cost_weights))
+            used_any.append(usage.used_any)
+            used_search.append(usage.used_search)
+            used_calc.append(usage.used_calculate)
+
+        cost_tensor = torch.tensor(costs, device=sequence_scores.device, dtype=sequence_scores.dtype)
+        router_reward = sequence_scores - self.router_budget_ctrl.value * cost_tensor
+
+        router_token_level_rewards = torch.zeros_like(token_level_scores)
+        router_token_level_rewards[:, -1] = router_reward.to(dtype)
+
+        batch.batch['router_token_level_rewards'] = router_token_level_rewards
+        batch.batch['router_sequence_rewards'] = router_reward.to(dtype)
+        batch.batch['router_cost'] = cost_tensor.to(dtype)
+
+        mean_cost = cost_tensor.mean().item()
+        lambda_value = self.router_budget_ctrl.update(mean_cost)
+
+        metrics = {
+            'router/mean_cost': mean_cost,
+            'router/lambda': lambda_value,
+            'router/reward/mean': router_reward.mean().item(),
+            'router/tool_usage_rate': float(np.mean(used_any)),
+            'router/tool_usage/search_rate': float(np.mean(used_search)),
+            'router/tool_usage/calc_rate': float(np.mean(used_calc)),
+        }
+        return metrics
+
     def fit(self):
         """
         The training loop of PPO.
@@ -626,8 +698,9 @@ class RayPPOTrainer(object):
         self.global_steps += 1
 
         for epoch in range(self.config.trainer.total_epochs):
-            for batch_dict in self.train_dataloader:
-                print(f'epoch {epoch}, step {self.global_steps}')
+            data_iterator = tqdm(self.train_dataloader, desc=f'epoch {epoch}', leave=False)
+            for batch_dict in data_iterator:
+                data_iterator.set_postfix(step=self.global_steps)
                 metrics = {}
                 timing_raw = {}
 
@@ -682,6 +755,10 @@ class RayPPOTrainer(object):
                         batch.batch['token_level_scores_format'] = format_tensor
                         batch.batch['token_level_scores_correctness'] = correctness_tensor
                         batch.batch['token_level_scores_length'] = length_tensor
+
+                        if self.router_enabled:
+                            router_metrics = self._maybe_compute_router_rewards(batch)
+                            metrics.update(router_metrics)
 
                         # compute rewards. apply_kl_penalty if available
                         if not self.config.actor_rollout_ref.actor.use_kl_loss:
@@ -742,4 +819,6 @@ class RayPPOTrainer(object):
                         val_metrics = self._validate()
                         pprint(f'Final validation metrics: {val_metrics}')
                         logger.log(data=val_metrics, step=self.global_steps)
+                    if self.config.trainer.get('save_on_exit', True):
+                        self._save_checkpoint()
                     return

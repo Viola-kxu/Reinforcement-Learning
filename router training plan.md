@@ -150,7 +150,7 @@ We reuse the GRPO machinery already used for actor training, but applied to the 
      - Share the actor optimizer/schedule, or
      - Use a separate optimizer with its own LR, controlled by config.
 
-4. **Optional GPT‑based supervised shaping**
+4. **Optional GPT-based supervised shaping**
 
    - Offline, using GPT, generate:
      - Per‑tool families and a per‑example `router_target_action` label (ANSWER/SEARCH/CALCULATE/MIXED).
@@ -179,80 +179,74 @@ Once trained:
 
 ---
 
-If you’re happy with this narrower plan, the next step (once you exit plan mode) would be to decide:  
-- Do you want to start with **pure RL** router training (no GPT labels) and only add GPT‑based labeling later if needed, or do you want GPT labelling from the beginning for a supervised warm‑start?
+## 7. Training loop instrumentation (progress bar + intermediate checkpoints)
+
+- **Progress bar**: wrap the main training loop in `tqdm` (or update the existing `Tracking` logs) so each global step shows ETA and throughput. For Ray, print updates from the driver to avoid log spam.
+- **Checkpoint cadence**: extend `_save_checkpoint` to run every `trainer.save_freq` steps (even mid-epoch). Each checkpoint should include:
+  - Actor weights (including router head parameters).
+  - Critic weights (if enabled).
+  - Router optimizer state (if separated).
+  - Lagrange multiplier and any running averages needed to resume training.
+- **Resumability**: store an experiment manifest (YAML/JSON) alongside checkpoints so WSL2/Linux training can resume even if the job is interrupted.
+
+## 8. Running on WSL2 / Docker
 
 
+1. **Environment prep**:
+   - Enable WSL2 and install Ubuntu 22.04 (or similar).
+   - Install NVIDIA drivers + `nvidia-container-toolkit` so Docker can access the GPU.
+   - Inside WSL2, install Docker and add your user to the `docker` group.
+   - Pull or build the ToolRL Docker image (e.g., `docker build -t toolrl .` or use a provided registry image).
+2. **Launching the container**:
+   ```bash
+   docker run --gpus all -it --rm \
+     -v /mnt/c/Users/kangq/OneDrive\ -\ Johns\ Hopkins/Documents/ToolRL:/workspace \
+     toolrl:latest /bin/bash
+   ```
+   (Adjust the `-v` path to point to your repo.)
+3. **Inside the container**:
+   - `cd /workspace`
+   - `pip install -e .` (installs ToolRL with router mods)
+   - Set env vars: `export DATA_DIR=dataset/rlla_4k`, `export BASE_MODEL=/path/to/model`, etc.
+4. **Training command** (example GRPO run with router):
 
+    My commands for training router:
+    ```bash
+    chmod +x run_router_training.sh
+    bash run_router_training.sh
+    ```
+   
+   **Option A: Direct Python call (recommended for router training)**:
+   ```bash
+   python -m verl.trainer.main_ppo \
+     algorithm.adv_estimator=grpo \
+     data.train_files=${DATA_DIR}/train_router.parquet \
+     data.val_files=${DATA_DIR}/test_router.parquet \
+     data.train_batch_size=512 \
+     data.val_batch_size=128 \
+     data.max_prompt_length=2048 \
+     data.max_response_length=1024 \
+     actor_rollout_ref.model.path=${BASE_MODEL} \
+     actor_rollout_ref.rollout.name=hf \
+     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+     router.enable=true \
+     router.budget_B=0.3 \
+     router.cost_weights.any_tool=1.0 \
+     trainer.save_freq=200 \
+     trainer.save_on_exit=true \
+     trainer.project_name=router_grpo \
+     trainer.experiment_name=baseline_router \
+     trainer.n_gpus_per_node=1 \
+     trainer.nnodes=1 \
+     trainer.total_epochs=15
+   ```
+   
+   **Option B: Use train_grpo.sh wrapper** (modify it first to include router configs):
+   - Edit `train_grpo.sh` to set `DATA_DIR`, `BASE_MODEL`, `EXPERIMENT_NAME`
+   - Edit `examples/grpo_trainer/run_grpo.sh` to add router overrides
+   - Then run: `bash train_grpo.sh`
+   
+   **Note**: The direct Python call (Option A) is simpler and more flexible for router experiments.
+5. **Monitoring**: use stdout progress bar, plus `wandb` or `tensorboard` logs mounted to `/workspace/runs`.
 
-## Chat 2
-You absolutely can (and should) train the router with RL; in this setup the router is basically a tiny bandit policy sitting on top of ToolRL’s existing environment.
-
-### 1. What is being trained?
-
-- **Router policy** \(π_r(a \mid prompt; θ_r)\):
-  - Input: the tokenized `prompt` (system+user) exactly as used now.
-  - Output: logits over 3 actions `{ANSWER, SEARCH-FAMILY, CALCULATE-FAMILY}`.
-  - Parameters \(θ_r\) live in a small head on top of the actor LM; the LM itself can be:
-    - Frozen (simplest first experiment), or
-    - Updated with its existing GRPO/PPO loss in parallel.
-
-### 2. One RL episode for the router
-
-For each dataset row (one prompt):
-
-1. **State**: the prompt from `train.parquet` (`prompt` column via `RLHFDataset`).
-2. **Action**: sample `a ~ π_r(a | prompt; θ_r)`:
-   - 0 = ANSWER, 1 = SEARCH-FAMILY, 2 = CALCULATE-FAMILY.
-3. **Conditioned rollout**:
-   - Modify the system message according to `a` (as we discussed: no tools vs “prefer search tools” vs “prefer calculation tools”) and call the existing `generate_sequences`.
-4. **Reward**:
-   - Compute **task reward** `r_task` using the existing RLLA reward:
-     - `score` from `rlla.compute_score(solution_str, ground_truth, step)`.
-   - Parse the generated text to see **what tools were actually used** (none / search‑family / calculate‑family), and compute a **tool cost** `c` (e.g. 0 if no tools, 1 if any tool, or weighted per family).
-   - Maintain a Lagrange multiplier `λ` to enforce a budget `B` on average cost:
-     \[
-     r_{\text{router}} = r_{\text{task}} - \lambda \cdot c
-     \]
-5. **Optionally GRPO-style grouping**:
-   - If you sample multiple trajectories per prompt (as your GRPO setup already does), you’ll have several \(r_{\text{router},i}\) for the same `extra_info.index`.
-   - Use `compute_grpo_outcome_advantage` on these router rewards (grouped by `index`) to get normalized **advantages** \(A_i\) per trajectory.
-
-### 3. The actual RL update
-
-For each trajectory \(i\) in the batch, you have:
-
-- Router log-prob of the chosen action: `log π_r(a_i | prompt_i; θ_r)`.
-- Advantage for that trajectory: \(A_i\) (either `r_router` baseline-subtracted, or GRPO-normalized within the prompt group).
-
-Then the router’s loss is the standard policy gradient objective:
-
-\[
-L_{\text{router}}(θ_r)
- = - \mathbb{E}_i\big[ \log π_r(a_i \mid prompt_i; θ_r)\, A_i \big]
-\]
-
-Practically:
-
-- Implement a small loss head in the actor module:
-  - Take `router_logits` from the prompt representation.
-  - Use `torch.distributions.Categorical` or `softmax` to sample `a` and compute `log_prob`.
-  - Compute `A_i` via your GRPO helper (reusing existing code, but feeding it the router rewards instead of token rewards).
-  - Backpropagate `L_router` into only the router head (and optionally higher LM layers if you want).
-
-### 4. Where this fits into ToolRL’s loop
-
-Inside `RayPPOTrainer.fit`, per step:
-
-1. Build the batch from `RLHFDataset` (unchanged).
-2. For each prompt, **run the router head**, sample `router_action`, store `router_log_prob`.
-3. Run the usual **actor rollout** under the route‑conditioned prompt.
-4. Compute:
-   - RLLA task reward (already implemented).
-   - Tool cost from actual tool use.
-   - Router reward `r_router`, and (if GRPO) router advantages.
-5. Do **two** updates:
-   - Actor/critic update (unchanged, using token‑level rewards and KL).
-   - Router update using `L_router` above.
-
-No extra labels are required for this RL training; GPT‑generated labels (if you later add them) are just an optional small supervised term on top of this RL objective.
+Following these steps ensures router RL can run entirely inside Linux/WSL2 with visible progress and recoverable checkpoints.
